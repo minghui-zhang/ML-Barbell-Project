@@ -1,0 +1,134 @@
+---
+title: "Barbell Prediction"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+## Goal:
+
+To predict the way in which barbell lifts were performed using accelerometer data.
+
+## Step 1. Read and clean the data
+
+```{r cars}
+
+set.seed(123)
+
+library(caret)
+library(dplyr)
+
+# read the data
+quiz_set <- read.csv('pml-testing.csv')
+all_data <- read.csv('pml-training.csv')
+
+# divide data into training (training and testing) and validation, for out of sample accuracy estimation
+inTrain = createDataPartition(all_data$classe, p = 0.7)[[1]]
+training = all_data[ inTrain,]
+validation = all_data[-inTrain,]
+
+inTest = createDataPartition(training$classe, p = 0.5)[[1]]
+training = training[-inTest,]
+testing = training[inTest,]
+
+# take out predictors we don't want, like name of the subject and timestamp
+training <- training %>% subset(select = -c(X:num_window))
+
+# replace blank cells with NA
+for (colName in colnames(training)) {
+  training[[colName]] <- sub("^$", NA, training[[colName]])
+}
+
+# take out predictors that have mostly NA's
+training <- training[, colSums(is.na(training)) < 0.5*nrow(training)]
+
+# coerce columns to numeric
+training_predictors <- training %>% subset(select = -c(classe))
+for (colName in colnames(training_predictors)) {
+  training_predictors[[colName]] <- as.numeric(training_predictors[[colName]])
+}
+
+# get rid of observations that don't have all predictors measured; this is for PCA later
+training <- training[complete.cases(training),]
+training_predictors <- training_predictors[complete.cases(training_predictors),]
+testing <- testing[complete.cases(testing),]
+validation <- validation[complete.cases(validation),]
+
+# select the same columns as in testing set
+testing <- testing %>% subset(select = colnames(training))
+validation <- validation %>% subset(select = colnames(training))
+quiz_set <- quiz_set %>% subset(select = colnames(training_predictors))
+```
+
+## Step 2. Exploratory analysis
+
+After cleaning, there are 52 variables left, many of which are correlated with each other. Therefore, do a principal component analysis to transform the data.
+
+```{r}
+
+# correlations among the predictors
+M <- round(cor(training_predictors), 2)
+diag(M) <- 0 # get rid of correlations of each variable with itself
+which(M > 0.8, arr.ind = T) 
+
+```
+
+
+## Step 3. Fit a model
+
+Use PCA to transform the predictors into orthogonal variables that explain 90% of the total variation.
+
+Two classifiers were fitted, and tested on the test set.
+
+(1) Classification tree: this had a low accuracy around 0.2 to 0.5, depending on the seed.
+(2) Treebag: this had a high accuracy of 1.
+
+```{r}
+
+# PCA
+preProc <- preProcess(training_predictors, method = 'pca', thresh = 0.9)
+training_PC <- predict(preProc, training_predictors) # calculate the PCs for training data 
+training_PC$classe <- training$classe
+
+# classification tree
+modelFit_tree <- train(classe ~., method = 'rpart', data = training_PC) 
+testing_PC <- predict(preProc, testing)
+tree_accuracy <- confusionMatrix(testing$classe, predict(modelFit_tree, testing_PC))
+tree_accuracy
+
+# treebag
+modelFit_treebag <- train(classe ~., method = 'treebag', data = training_PC) 
+testing_PC <- predict(preProc, testing)
+treebag_accuracy <- confusionMatrix(testing$classe, predict(modelFit_treebag, testing_PC))
+treebag_accuracy
+
+# random forest
+# modelFit_rf <- train(classe ~., method = 'rf', data = training_PC) 
+# testing_PC <- predict(preProc, testing)
+# rf_accuracy <- confusionMatrix(testing$classe, predict(modelFit_rf, testing_PC))
+# rf_accuracy
+
+```
+
+## Step 4. Out of sample error
+
+Estimate out of sample error using validation dataset. The accuracy is 0.88.
+
+```{r}
+
+validation_PC <- predict(preProc, validation)
+accuracy <- confusionMatrix(validation$classe, predict(modelFit_treebag, validation_PC))
+accuracy
+
+```
+
+## Step 5. Estimate on quiz set
+
+```{r}
+
+quiz_PC <- predict(preProc,quiz_set)
+quiz_prediction <- predict(modelFit_treebag, quiz_PC)
+quiz_set$class_predicted <- quiz_prediction
+quiz_set$case <- 1:20
+```
